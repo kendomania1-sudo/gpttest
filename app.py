@@ -181,6 +181,27 @@ def fmt_table(df: pd.DataFrame, quarterly: bool, div: float) -> pd.DataFrame:
     return t.map(lambda v: f"{v:,.1f}" if pd.notna(v) else "-")
 
 
+# 확대/이동/드래그를 막아 터치 실수로 그래프가 변하지 않게 고정 (값 툴팁은 유지)
+LOCKED = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False,
+          "showAxisDragHandles": False}
+
+
+def show(fig: go.Figure) -> None:
+    fig.update_layout(dragmode=False)
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
+    st.plotly_chart(fig, width="stretch", config=LOCKED)
+
+
+def line_chart(df: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    for col in df.columns:
+        fig.add_trace(go.Scatter(x=list(df.index), y=df[col], name=col, mode="lines+markers"))
+    fig.update_layout(height=300, yaxis_title="%", hovermode="x unified",
+                      margin=dict(t=30, b=10), legend=dict(orientation="h", y=1.15))
+    return fig
+
+
 # ---------------------------------------------------------------- UI
 st.set_page_config(page_title="기업 3년 분석", page_icon="📈", layout="wide")
 st.title("📈 기업 3년 주가 · 실적 · 현금흐름")
@@ -242,7 +263,7 @@ if info.get("sector"):
 tab_price, tab_income, tab_cash = st.tabs(["주가 흐름", "매출 · 이익", "현금흐름"])
 
 with tab_price:
-    st.plotly_chart(price_chart(hist, currency), width="stretch")
+    show(price_chart(hist, currency))
 
 income_src = data["q_income"] if quarterly else data["income"]
 cash_src = data["q_cashflow"] if quarterly else data["cashflow"]
@@ -253,14 +274,14 @@ with tab_income:
         st.info("손익계산서 데이터가 없습니다.")
     else:
         div, unit = scale_for(inc, fin_currency)
-        st.plotly_chart(bar_chart(inc, quarterly, div, unit), width="stretch")
+        show(bar_chart(inc, quarterly, div, unit))
         if "매출" in inc and inc["매출"].notna().any():
             margins = pd.DataFrame({
                 k: inc[k] / inc["매출"] * 100 for k in ("영업이익", "순이익") if k in inc
             })
             margins.index = [period_label(i, quarterly) for i in margins.index]
             st.markdown("**이익률 (%)**")
-            st.line_chart(margins.rename(columns=lambda c: f"{c}률"))
+            show(line_chart(margins.rename(columns=lambda c: f"{c}률")))
         st.markdown(f"**상세 ({unit})**")
         st.dataframe(fmt_table(inc, quarterly, div), width="stretch")
 
@@ -270,6 +291,6 @@ with tab_cash:
         st.info("현금흐름표 데이터가 없습니다.")
     else:
         div, unit = scale_for(cf, fin_currency)
-        st.plotly_chart(bar_chart(cf, quarterly, div, unit), width="stretch")
+        show(bar_chart(cf, quarterly, div, unit))
         st.markdown(f"**상세 ({unit})**")
         st.dataframe(fmt_table(cf, quarterly, div), width="stretch")
