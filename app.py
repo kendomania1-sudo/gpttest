@@ -220,11 +220,13 @@ fin_currency = info.get("financialCurrency") or currency
 st.subheader(info.get("longName") or info.get("shortName") or symbol)
 start, last = hist["Close"].iloc[0], hist["Close"].iloc[-1]
 one_year = hist[hist.index >= hist.index[-1] - pd.DateOffset(years=1)]["Close"]
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("현재가", f"{last:,.2f} {currency}")
+pfmt = "{:,.0f}" if currency in ("KRW", "JPY") else "{:,.2f}"
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric(f"현재가 ({currency})", pfmt.format(last))
 c2.metric("3년 수익률", f"{(last / start - 1) * 100:+.1f}%")
 c3.metric("1년 수익률", f"{(last / one_year.iloc[0] - 1) * 100:+.1f}%")
-c4.metric("3년 최고 / 최저", f"{hist['Close'].max():,.0f} / {hist['Close'].min():,.0f}")
+c4.metric("3년 최고가", pfmt.format(hist["Close"].max()))
+c5.metric("3년 최저가", pfmt.format(hist["Close"].min()))
 if info.get("sector"):
     st.caption(f"{info.get('sector')} · {info.get('industry', '')} · {info.get('country', '')}")
 
