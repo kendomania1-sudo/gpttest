@@ -1,0 +1,34 @@
+# Define named volumes
+volumes:
+  caddy_data:
+  caddy_config:
+  helpdesk_data:
+  postgres_data:
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "80:80"
+      - "443:443"
+
+  django-helpdesk:
+    image: djangohelpdesk/standalone
+    user: root
+    volumes:
+      - helpdesk_data:/data
+      - ./custom_navigation_header.html:/opt/django-helpdesk/helpdesk/templates/helpdesk/custom_navigation_header.html:ro
+    env_file: docker.env
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:${POSTGRES_MAJOR_VERSION:-17}-bullseye
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file: docker.env

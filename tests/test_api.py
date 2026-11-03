@@ -1,0 +1,609 @@
+import base64
+from _datetime import timedelta
+from typing import ClassVar
+
+from django.contrib.auth.models import Permission, User
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
+from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
+from freezegun import freeze_time
+from rest_framework import HTTP_HEADER_ENCODING
+from rest_framework.exceptions import ErrorDetail
+from rest_framework.status import (
+    HTTP_200_OK,
+    HTTP_201_CREATED,
+    HTTP_204_NO_CONTENT,
+    HTTP_400_BAD_REQUEST,
+    HTTP_403_FORBIDDEN,
+)
+from rest_framework.test import APITestCase
+
+from helpdesk.lib import convert_value
+from helpdesk.models import CustomField, Queue, Ticket
+
+frozen_date_time_str = (
+    (timezone.now() - timedelta(days=100)).replace(tzinfo=None).isoformat()
+)
+
+
+class TicketTest(APITestCase):
+    due_date = timezone.now() - timedelta(days=20)
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.queue = Queue.objects.create(
+            title="Test Queue",
+            slug="test-queue",
+        )
+
+    def test_create_api_ticket_not_authenticated_user(self):
+        response = self.client.post("/api/tickets/")
+        self.assertEqual(response.status_code, HTTP_403_FORBIDDEN)
+
+    def test_create_api_ticket_authenticated_non_staff_user(self):
+        non_staff_user = User.objects.create_user(username="test")
+        self.client.force_authenticate(non_staff_user)
+        response = self.client.post("/api/tickets/")
+        self.assertEqual(response.status_code, HTTP_403_FORBIDDEN)
+
+    def test_create_api_ticket_no_data(self):
+        staff_user = User.objects.create_user(username="test", is_staff=True)
+        self.client.force_authenticate(staff_user)
+        response = self.client.post("/api/tickets/")
+        self.assertEqual(response.status_code, HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data,
+            {
+                "queue": [
+                    ErrorDetail(string="This field is required.", code="required")
+                ],
+                "title": [
+                    ErrorDetail(string="This field is required.", code="required")
+                ],
+            },
+        )
+        self.assertFalse(Ticket.objects.exists())
+
+    def test_create_api_ticket_wrong_date_format(self):
+        staff_user = User.objects.create_user(username="test", is_staff=True)
+        self.client.force_authenticate(staff_user)
+        response = self.client.post(
+            "/api/tickets/",
+            {
+                "queue": self.queue.id,
+                "title": "Test title",
+                "due_date": "monday, 1st of may 2022",
+            },
+        )
+        self.assertEqual(response.status_code, HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data,
+            {
+                "due_date": [
+                    ErrorDetail(
+                        string="Datetime has wrong format. Use one of these formats instead: YYYY-MM-DDThh:mm[:ss[.uuuuuu]][+HH:MM|-HH:MM|Z].",
+                        code="invalid",
+                    )
+                ]
+            },
+        )
+        self.assertFalse(Ticket.objects.exists())
+
+    def test_create_api_ticket_authenticated_staff_user(self):
+        staff_user = User.objects.create_user(username="test", is_staff=True)
+        self.client.force_authenticate(staff_user)
+        response = self.client.post(
+            "/api/tickets/",
+            {
+                "queue": self.queue.id,
+                "title": "Test title",
+                "description": "Test description\nMulti lines",
+                "submitter_email": "test@mail.com",
+                "priority": 4,
+            },
+        )
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+        created_ticket = Ticket.objects.get()
+        self.assertEqual(created_ticket.title, "Test title")
+        self.assertEqual(created_ticket.description, "Test description\nMulti lines")
+        self.assertEqual(created_ticket.submitter_email, "test@mail.com")
+        self.assertEqual(created_ticket.priority, 4)
+        self.assertEqual(created_ticket.followup_set.count(), 1)
+
+    def test_create_api_ticket_with_basic_auth(self):
+        username = "admin"
+        password = "admin"
+        User.objects.create_user(username=username, password=password, is_staff=True)
+
+        test_user = User.objects.create_user(username="test")
+        merge_ticket = Ticket.objects.create(queue=self.queue, title="merge ticket")
+
+        # Generate base64 credentials string
+        credentials = f"{username}:{password}"
+        base64_credentials = base64.b64encode(
+            credentials.encode(HTTP_HEADER_ENCODING)
+        ).decode(HTTP_HEADER_ENCODING)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Basic {base64_credentials}")
+        response = self.client.post(
+            "/api/tickets/",
+            {
+                "queue": self.queue.id,
+                "title": "Title",
+                "description": "Description",
+                "resolution": "Resolution",
+                "assigned_to": test_user.id,
+                "submitter_email": "test@mail.com",
+                "status": Ticket.RESOLVED_STATUS,
+                "priority": 1,
+                "on_hold": True,
+                "due_date": self.due_date,
+                "merged_to": merge_ticket.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+        created_ticket = Ticket.objects.last()
+        self.assertEqual(created_ticket.title, "Title")
+        self.assertEqual(created_ticket.description, "Description")
+        # resolution can not be set on creation
+        self.assertIsNone(created_ticket.resolution)
+        self.assertEqual(created_ticket.assigned_to, test_user)
+        self.assertEqual(created_ticket.submitter_email, "test@mail.com")
+        self.assertEqual(created_ticket.priority, 1)
+        # on_hold is False on creation
+        self.assertFalse(created_ticket.on_hold)
+        # status is always open on creation
+        self.assertEqual(created_ticket.status, Ticket.OPEN_STATUS)
+        self.assertEqual(created_ticket.due_date, self.due_date)
+        # merged_to can not be set on creation
+        self.assertIsNone(created_ticket.merged_to)
+
+    def test_edit_api_ticket(self):
+        staff_user = User.objects.create_user(username="admin", is_staff=True)
+        test_ticket = Ticket.objects.create(queue=self.queue, title="Test ticket")
+
+        test_user = User.objects.create_user(username="test")
+        merge_ticket = Ticket.objects.create(queue=self.queue, title="merge ticket")
+
+        self.client.force_authenticate(staff_user)
+        response = self.client.put(
+            f"/api/tickets/{test_ticket.id}/",
+            {
+                "queue": self.queue.id,
+                "title": "Title",
+                "description": "Description",
+                "resolution": "Resolution",
+                "assigned_to": test_user.id,
+                "submitter_email": "test@mail.com",
+                "status": Ticket.RESOLVED_STATUS,
+                "priority": 1,
+                "on_hold": True,
+                "due_date": self.due_date,
+                "merged_to": merge_ticket.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, HTTP_200_OK)
+        test_ticket.refresh_from_db()
+        self.assertEqual(test_ticket.title, "Title")
+        self.assertEqual(test_ticket.description, "Description")
+        self.assertEqual(test_ticket.resolution, "Resolution")
+        self.assertEqual(test_ticket.assigned_to, test_user)
+        self.assertEqual(test_ticket.submitter_email, "test@mail.com")
+        self.assertEqual(test_ticket.priority, 1)
+        self.assertTrue(test_ticket.on_hold)
+        self.assertEqual(test_ticket.status, Ticket.RESOLVED_STATUS)
+        self.assertEqual(test_ticket.due_date, self.due_date)
+        self.assertEqual(test_ticket.merged_to, merge_ticket)
+
+    def test_partial_edit_api_ticket(self):
+        staff_user = User.objects.create_user(username="admin", is_staff=True)
+        test_ticket = Ticket.objects.create(queue=self.queue, title="Test ticket")
+
+        self.client.force_authenticate(staff_user)
+        response = self.client.patch(
+            f"/api/tickets/{test_ticket.id}/",
+            {
+                "description": "New description",
+            },
+        )
+
+        self.assertEqual(response.status_code, HTTP_200_OK)
+        test_ticket.refresh_from_db()
+        self.assertEqual(test_ticket.description, "New description")
+
+    def test_delete_api_ticket(self):
+        staff_user = User.objects.create_user(username="admin", is_staff=True)
+        test_ticket = Ticket.objects.create(queue=self.queue, title="Test ticket")
+        self.client.force_authenticate(staff_user)
+        response = self.client.delete(f"/api/tickets/{test_ticket.id}/")
+        self.assertEqual(response.status_code, HTTP_204_NO_CONTENT)
+        self.assertFalse(Ticket.objects.exists())
+
+    @freeze_time(frozen_date_time_str)
+    def test_create_api_ticket_with_custom_fields(self):
+        custom_date = "2022-04-11"
+        custom_time = "23:59:59"
+        custom_datetime = convert_value(timezone.now() - timedelta(days=30))
+
+        # Create custom fields
+        for field_type, field_display in CustomField.DATA_TYPE_CHOICES:
+            extra_data = {}
+            if field_type in ("varchar", "text"):
+                extra_data["max_length"] = 10
+            if field_type == "integer":
+                # Set one field as required to test error if not provided
+                extra_data["required"] = True
+            if field_type == "decimal":
+                extra_data["max_length"] = 7
+                extra_data["decimal_places"] = 3
+            if field_type == "list":
+                extra_data["list_values"] = """Green
+                Blue
+                Red
+                Yellow"""
+            CustomField.objects.create(
+                name=field_type, label=field_display, data_type=field_type, **extra_data
+            )
+
+        staff_user = User.objects.create_user(username="test", is_staff=True)
+        self.client.force_authenticate(staff_user)
+
+        # Test creation without providing required field
+        response = self.client.post(
+            "/api/tickets/",
+            {
+                "queue": self.queue.id,
+                "title": "Test title",
+                "description": "Test description\nMulti lines",
+                "submitter_email": "test@mail.com",
+                "priority": 4,
+            },
+        )
+        self.assertEqual(response.status_code, HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data,
+            {
+                "custom_integer": [
+                    ErrorDetail(string="This field is required.", code="required")
+                ]
+            },
+        )
+
+        # Test creation with custom field values
+        response = self.client.post(
+            "/api/tickets/",
+            {
+                "queue": self.queue.id,
+                "title": "Test title",
+                "description": "Test description\nMulti lines",
+                "submitter_email": "test@mail.com",
+                "priority": 4,
+                "custom_varchar": "test",
+                "custom_text": "multi\nline",
+                "custom_integer": "1",
+                "custom_decimal": "42.987",
+                "custom_list": "Red",
+                "custom_boolean": True,
+                "custom_date": custom_date,
+                "custom_time": custom_time,
+                "custom_datetime": custom_datetime,
+                "custom_email": "email@test.com",
+                "custom_url": "http://django-helpdesk.readthedocs.org/",
+                "custom_ipaddress": "127.0.0.1",
+                "custom_slug": "test-slug",
+            },
+        )
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+        # Check all fields with data returned from the response
+        self.maxDiff = None
+        # The date string generated sometimes has a "Z" appended so until they why is figured out...
+        date_suffix_hack = (
+            "Z" if response.data["followup_set"][0]["date"].endswith("Z") else ""
+        )
+        self.assertDictEqual(
+            response.data,
+            {
+                "id": 1,
+                "queue": 1,
+                "title": "Test title",
+                "description": "Test description\nMulti lines",
+                "resolution": None,
+                "submitter_email": "test@mail.com",
+                "assigned_to": None,
+                "status": 1,
+                "on_hold": False,
+                "priority": 4,
+                "due_date": None,
+                "merged_to": None,
+                "followup_set": [
+                    {
+                        "id": 1,
+                        "ticket": 1,
+                        "user": 1,
+                        "title": "Ticket Opened",
+                        "comment": "Test description\nMulti lines",
+                        "public": True,
+                        "new_status": None,
+                        "time_spent": None,
+                        "followupattachment_set": [],
+                        "date": frozen_date_time_str + date_suffix_hack,
+                        "message_id": None,
+                        "email_recipients": ["test@mail.com"],
+                    }
+                ],
+                "custom_varchar": "test",
+                "custom_text": "multi\nline",
+                "custom_integer": 1,
+                "custom_decimal": "42.987",
+                "custom_list": "Red",
+                "custom_boolean": True,
+                "custom_date": custom_date,
+                "custom_time": custom_time,
+                "custom_datetime": custom_datetime,
+                "custom_email": "email@test.com",
+                "custom_url": "http://django-helpdesk.readthedocs.org/",
+                "custom_ipaddress": "127.0.0.1",
+                "custom_slug": "test-slug",
+            },
+        )
+
+    def test_create_api_ticket_with_attachment(self):
+        staff_user = User.objects.create_user(username="test", is_staff=True)
+        self.client.force_authenticate(staff_user)
+        test_file = SimpleUploadedFile(
+            "file.jpg", b"file_content", content_type="image/jpg"
+        )
+        response = self.client.post(
+            "/api/tickets/",
+            {
+                "queue": self.queue.id,
+                "title": "Test title",
+                "description": "Test description\nMulti lines",
+                "submitter_email": "test@mail.com",
+                "priority": 4,
+                "attachment": test_file,
+            },
+        )
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+        created_ticket = Ticket.objects.get()
+        self.assertEqual(created_ticket.title, "Test title")
+        self.assertEqual(created_ticket.description, "Test description\nMulti lines")
+        self.assertEqual(created_ticket.submitter_email, "test@mail.com")
+        self.assertEqual(created_ticket.priority, 4)
+        self.assertEqual(created_ticket.followup_set.count(), 1)
+        self.assertEqual(
+            created_ticket.followup_set.get().followupattachment_set.count(), 1
+        )
+        attachment = created_ticket.followup_set.get().followupattachment_set.get()
+        self.assertEqual(
+            attachment.file.name,
+            f"helpdesk/attachments/test-queue-1-{created_ticket.secret_key}/1/file.jpg",
+        )
+
+    def test_create_follow_up_with_attachments(self):
+        staff_user = User.objects.create_user(username="test", is_staff=True)
+        self.client.force_authenticate(staff_user)
+        ticket = Ticket.objects.create(queue=self.queue, title="Test")
+        test_file_1 = SimpleUploadedFile(
+            "file.jpg", b"file_content", content_type="image/jpg"
+        )
+        test_file_2 = SimpleUploadedFile(
+            "doc.pdf", b"Doc content", content_type="application/pdf"
+        )
+
+        response = self.client.post(
+            "/api/followups/",
+            {
+                "ticket": ticket.id,
+                "title": "Test",
+                "comment": "Test answer\nMulti lines",
+                "attachments": [test_file_1, test_file_2],
+            },
+        )
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+        created_followup = ticket.followup_set.last()
+        self.assertEqual(created_followup.title, "Test")
+        self.assertEqual(created_followup.comment, "Test answer\nMulti lines")
+        self.assertEqual(created_followup.followupattachment_set.count(), 2)
+        self.assertEqual(
+            created_followup.followupattachment_set.first().filename, "doc.pdf"
+        )
+        self.assertEqual(
+            created_followup.followupattachment_set.first().mime_type, "application/pdf"
+        )
+        self.assertEqual(
+            created_followup.followupattachment_set.last().filename, "file.jpg"
+        )
+        self.assertEqual(
+            created_followup.followupattachment_set.last().mime_type, "image/jpg"
+        )
+
+
+class UserTicketTest(APITestCase):
+    def setUp(self):
+        self.queue = Queue.objects.create(title="Test queue")
+        self.user = User.objects.create_user(username="test")
+        self.client.force_authenticate(self.user)
+
+    def test_get_user_tickets(self):
+        user = User.objects.create_user(username="test2", email="foo@example.com")
+        ticket_1 = Ticket.objects.create(
+            queue=self.queue,
+            title="Test 1",
+            submitter_email="foo@example.com",
+            due_date=timezone.now() + timedelta(days=2),
+        )
+        Ticket.objects.create(
+            queue=self.queue, title="Test 2", submitter_email="bar@example.com"
+        )
+        ticket_3 = Ticket.objects.create(
+            queue=self.queue, title="Test 3", submitter_email="foo@example.com"
+        )
+        self.client.force_authenticate(user)
+        response = self.client.get("/api/user_tickets/")
+        self.assertEqual(response.status_code, HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 2)
+        self.assertEqual(response.data["results"][0]["id"], ticket_3.id)
+        self.assertEqual(response.data["results"][1]["id"], ticket_1.id)
+        self.assertEqual(
+            response.data["results"][1]["created"],
+            ticket_1.created.isoformat().replace("+00:00", "Z"),
+        )
+        self.assertEqual(
+            response.data["results"][1]["due_date"],
+            ticket_1.due_date.isoformat().replace("+00:00", "Z"),
+        )
+        self.assertIsNone(response.data["results"][0]["due_date"])
+
+    def test_staff_user(self):
+        staff_user = User.objects.create_user(
+            username="test2", is_staff=True, email="staff@example.com"
+        )
+        Ticket.objects.create(
+            queue=self.queue, title="Test 1", submitter_email="staff@example.com"
+        )
+        Ticket.objects.create(
+            queue=self.queue, title="Test 2", submitter_email="foo@example.com"
+        )
+        self.client.force_authenticate(staff_user)
+        response = self.client.get("/api/user_tickets/")
+        self.assertEqual(response.status_code, HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_not_logged_in_user(self):
+        Ticket.objects.create(
+            queue=self.queue, title="Test 1", submitter_email="ex@example.com"
+        )
+        self.client.logout()
+        response = self.client.get("/api/user_tickets/")
+        self.assertEqual(response.status_code, HTTP_403_FORBIDDEN)
+
+
+STRICT_PASSWORD_VALIDATORS = [
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 12},
+    },
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+
+class CreateUserTest(APITestCase):
+    """The account creation endpoint, which two things once let past.
+
+    Staff membership was the only thing asked for, so a staff account without
+    `auth.add_user` created users the admin site would have refused it, and the
+    submitted password never met the validators the deployment configured.
+    """
+
+    payload: ClassVar[dict] = {
+        "username": "new-user",
+        "first_name": "New",
+        "last_name": "User",
+        "email": "new-user@example.com",
+        "password": "a-long-and-unremarkable-passphrase",
+    }
+
+    @staticmethod
+    def add_user_permission():
+        return Permission.objects.get(
+            content_type__app_label="auth", codename="add_user"
+        )
+
+    def post_payload(self, **overrides):
+        return self.client.post("/api/users/", {**self.payload, **overrides})
+
+    def assertNoUserCreated(self):
+        self.assertFalse(
+            User.objects.filter(username=self.payload["username"]).exists()
+        )
+
+    def test_create_user_staff_without_add_user_permission(self):
+        staff_user = User.objects.create_user(username="staff", is_staff=True)
+        self.client.force_authenticate(staff_user)
+        response = self.post_payload()
+        self.assertEqual(response.status_code, HTTP_403_FORBIDDEN)
+        self.assertNoUserCreated()
+
+    def test_create_user_non_staff_with_add_user_permission(self):
+        user = User.objects.create_user(username="permitted")
+        user.user_permissions.add(self.add_user_permission())
+        self.client.force_authenticate(User.objects.get(pk=user.pk))
+        response = self.post_payload()
+        self.assertEqual(response.status_code, HTTP_403_FORBIDDEN)
+        self.assertNoUserCreated()
+
+    def test_create_user_not_authenticated(self):
+        response = self.post_payload()
+        self.assertEqual(response.status_code, HTTP_403_FORBIDDEN)
+        self.assertNoUserCreated()
+
+    def test_create_user_staff_with_add_user_permission(self):
+        staff_user = User.objects.create_user(username="staff", is_staff=True)
+        staff_user.user_permissions.add(self.add_user_permission())
+        self.client.force_authenticate(User.objects.get(pk=staff_user.pk))
+        response = self.post_payload()
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+        created_user = User.objects.get(username=self.payload["username"])
+        self.assertTrue(created_user.is_active)
+        self.assertTrue(created_user.check_password(self.payload["password"]))
+        self.assertNotEqual(created_user.password, self.payload["password"])
+
+    def test_create_user_password_never_reaches_the_database_in_clear(self):
+        staff_user = User.objects.create_user(username="staff", is_staff=True)
+        staff_user.user_permissions.add(self.add_user_permission())
+        self.client.force_authenticate(User.objects.get(pk=staff_user.pk))
+        with CaptureQueriesContext(connection) as context:
+            response = self.post_payload()
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+        executed_sql = "\n".join(query["sql"] for query in context.captured_queries)
+        self.assertNotIn(self.payload["password"], executed_sql)
+
+    def test_create_user_superuser(self):
+        superuser = User.objects.create_superuser(
+            username="root", email="root@example.com", password="root"
+        )
+        self.client.force_authenticate(superuser)
+        response = self.post_payload()
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+
+    @override_settings(AUTH_PASSWORD_VALIDATORS=STRICT_PASSWORD_VALIDATORS)
+    def test_create_user_password_refused_by_validators(self):
+        staff_user = User.objects.create_user(username="staff", is_staff=True)
+        staff_user.user_permissions.add(self.add_user_permission())
+        self.client.force_authenticate(User.objects.get(pk=staff_user.pk))
+        response = self.post_payload(password="password")
+        self.assertEqual(response.status_code, HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.data)
+        self.assertNoUserCreated()
+
+    @override_settings(AUTH_PASSWORD_VALIDATORS=STRICT_PASSWORD_VALIDATORS)
+    def test_create_user_password_too_similar_to_username(self):
+        staff_user = User.objects.create_user(username="staff", is_staff=True)
+        staff_user.user_permissions.add(self.add_user_permission())
+        self.client.force_authenticate(User.objects.get(pk=staff_user.pk))
+        response = self.post_payload(password="new-user-1234")
+        self.assertEqual(response.status_code, HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.data)
+        self.assertNoUserCreated()
+
+    @override_settings(AUTH_PASSWORD_VALIDATORS=STRICT_PASSWORD_VALIDATORS)
+    def test_create_user_password_accepted_by_validators(self):
+        staff_user = User.objects.create_user(username="staff", is_staff=True)
+        staff_user.user_permissions.add(self.add_user_permission())
+        self.client.force_authenticate(User.objects.get(pk=staff_user.pk))
+        response = self.post_payload()
+        self.assertEqual(response.status_code, HTTP_201_CREATED)
+        self.assertTrue(
+            User.objects.get(username=self.payload["username"]).check_password(
+                self.payload["password"]
+            )
+        )

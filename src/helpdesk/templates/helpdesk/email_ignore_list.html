@@ -1,0 +1,76 @@
+{% extends "helpdesk/base.html" %}
+
+{% load i18n %}
+
+{% block helpdesk_title %}
+  {% translate "Ignored E-Mail Addresses" %}
+{% endblock helpdesk_title %}
+
+{% block helpdesk_breadcrumb %}
+  <li class="breadcrumb-item">
+    <a href="{% url 'helpdesk:system_settings' %}">{% translate "System Settings" %}</a>
+  </li>
+  <li class="breadcrumb-item active">{% translate "Ignored E-Mail Addresses" %}</li>
+{% endblock helpdesk_breadcrumb %}
+
+{% block helpdesk_body %}
+  <h2>{% translate "Ignored E-Mail Addresses" %}</h2>
+  <p class="lead text-body-secondary">
+    {% translate "The following e-mail addresses are currently being ignored by the incoming e-mail processor. You can add a new item or delete any of the items below as required." %}
+  </p>
+  <div class="d-flex justify-content-end mb-3">
+    <a class="btn bg-body-tertiary border" type="button" href="{% url "helpdesk:email_ignore_add" %}">
+      <i class="fa-solid fa-plus me-2"></i>{% translate "Add an Email" %}
+    </a>
+  </div>
+  <div class="card">
+    <div class="card-body px-0">
+      <div class="table-responsive">
+        <table class="table">
+          <thead class="text-uppercase small fw-medium">
+            <tr>
+              <td class="text-body-secondary">{% translate "Name" %}</td>
+              <td class="text-body-secondary">{% translate "E-Mail Address" %}</td>
+              <td class="text-body-secondary">{% translate "Date Added" %}</td>
+              <td class="text-body-secondary">{% translate "Queues" %}</td>
+              <td class="text-body-secondary">{% translate "Keep in mailbox?" %}</td>
+              <td class="text-body-secondary">{% translate "Delete" %}</td>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ignore in ignore_list %}
+              <tr>
+                <td>{{ ignore.name }}</td>
+                <td>{{ ignore.email_address }}</td>
+                <td>{{ ignore.date }}</td>
+                <td>
+                  {% for queue in ignore.queues.all %}
+                    {{ queue.slug }}{% if not forloop.last %}, {% endif %}
+                  {% empty %}
+                    {% translate "All" %}
+                  {% endfor %}
+                </td>
+                <td>
+                  {% if ignore.keep_in_mailbox %}
+                    <span class="badge bg-success-subtle text-success-emphasis">{% translate "Yes" %}</span>
+                  {% else %}
+                    <span class="badge bg-warning-subtle text-warning-emphasis">{% translate "No" %}</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <a class="btn-close"
+                     type="button"
+                     href="{% url "helpdesk:email_ignore_del" ignore.id %}"
+                     aria-label="{% translate "Remove email from ignored list" %}"></a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card-footer text-body-secondary small">
+      {% translate "Note: If the 'Keep' option is not selected, emails sent from that address will be deleted permanently." %}
+    </div>
+  </div>
+{% endblock helpdesk_body %}

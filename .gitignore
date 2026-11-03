@@ -1,0 +1,65 @@
+*.pyc
+.eggs/
+/dist/
+django_helpdesk.egg-info
+demo/*.egg-info
+demo/demodesk/*.sqlite3
+docs/html/*
+docs/doctrees/*
+.coverage
+.project
+.pydevproject
+.directory
+*.swp
+.idea
+.tox/**
+.venv
+
+# ignore demo attachments that user might have added
+helpdesk/attachments/
+demo/demodesk/media/helpdesk/attachments/*
+!demo/demodesk/media/helpdesk/attachments/DH-3
+demo/demodesk/media/helpdesk/attachments/DH-3/*
+!demo/demodesk/media/helpdesk/attachments/DH-3/3
+!demo/demodesk/media/helpdesk/attachments/DH-3/4
+demo/demodesk/media/helpdesk/attachments/DH-3/3/*
+demo/demodesk/media/helpdesk/attachments/DH-3/4/*
+!demo/demodesk/media/helpdesk/attachments/DH-3/3/someinfo.txt
+!demo/demodesk/media/helpdesk/attachments/DH-3/4/helpdesk.png
+
+# Devbox
+.devbox
+devbox.lock
+devbox.json
+
+
+# === Yarn core files ===
+.yarn/*
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions
+
+# If you use Yarn node_modules linker
+node_modules/
+
+# Yarn state files
+.pnp.*
+
+# === Log / lock / cache ===
+yarn-error.log
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# === now ignore vendor files ===
+src/helpdesk/static/helpdesk/vendor/*
+
+# === make rundemo ===
+uv.lock
+demodesk/db.sqlite3
+
+# Development files
+.vscode/
+.cursor/
+.devcontainer/

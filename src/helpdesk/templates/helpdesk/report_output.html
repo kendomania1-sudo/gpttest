@@ -1,0 +1,203 @@
+{% extends "helpdesk/base.html" %}
+
+{% load i18n static %}
+
+{% block helpdesk_title %}
+  {{ title }}
+{% endblock helpdesk_title %}
+
+{% block helpdesk_body %}
+  {# Page header row #}
+  <div class="row align-items-center ms-2 g-3 mb-3">
+    <div class="col">
+      <p class="text-uppercase mb-0 text-body-secondary small">{% translate "Overview" %}</p>
+      <h1 class="fs-4">Reports</h1>
+    </div>
+    <div class="col-auto d-flex gap-2">
+      <button class="btn bg-body-tertiary border"
+              type="button"
+              data-bs-toggle="collapse"
+              data-bs-target="#filterReport"
+              aria-expanded="false"
+              aria-controls="filterReport">
+        <i class="fa-solid fa-sliders me-1"></i>
+        {% translate "Filter Report" %}
+      </button>
+      <div class="dropdown">
+        <button class="btn bg-body-tertiary border dropdown-toggle"
+                type="button"
+                data-bs-toggle="dropdown"
+                aria-expanded="false">
+          <i class="fas fa-chart-line me-1"></i>
+          {% translate "Change report" %}
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li>
+            <h6 class="dropdown-header">{% translate "Reports for User" %}</h6>
+          </li>
+          {% url 'helpdesk:run_report' report='userpriority' as user_priority_url %}
+          {% url 'helpdesk:run_report' report='userqueue' as user_queue_url %}
+          {% url 'helpdesk:run_report' report='userstatus' as user_status_url %}
+          {% url 'helpdesk:run_report' report='usermonth' as user_month_url %}
+          <li>
+            <a class="dropdown-item"
+               href='{{ user_priority_url }}{% if saved_query %}?saved_query={{ saved_query }}{% endif %}'>
+              {% translate "by Priority" %}
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item"
+               href='{{ user_queue_url }}{% if saved_query %}?saved_query={{ saved_query }}{% endif %}'>
+              {% translate "by Queue" %}
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item"
+               href='{{ user_status_url }}{% if saved_query %}?saved_query={{ saved_query }}{% endif %}'>
+              {% translate "by Status" %}
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item"
+               href='{{ user_month_url }}{% if saved_query %}?saved_query={{ saved_query }}{% endif %}'>
+              {% translate "by Month" %}
+            </a>
+          </li>
+          <li>
+            <hr class="dropdown-divider" />
+          </li>
+          <li>
+            <h6 class="dropdown-header">{% translate "Reports for Queue" %}</h6>
+          </li>
+          {% url 'helpdesk:run_report' report='queuepriority' as queue_priority_url %}
+          {% url 'helpdesk:run_report' report='queuestatus' as queue_status_url %}
+          {% url 'helpdesk:run_report' report='queuemonth' as queue_month_url %}
+          {% url 'helpdesk:run_report' report='daysuntilticketclosedbymonth' as closed_by_month_url %}
+          <li>
+            <a class="dropdown-item"
+               href='{{ queue_priority_url }}{% if saved_query %}?saved_query={{ saved_query }}{% endif %}'>
+              {% translate "by Priority" %}
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item"
+               href='{{ queue_status_url }}{% if saved_query %}?saved_query={{ saved_query }}{% endif %}'>
+              {% translate "by Status" %}
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item"
+               href='{{ queue_month_url }}{% if saved_query %}?saved_query={{ saved_query }}{% endif %}'>
+              {% translate "by Month" %}
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item"
+               href='{{ closed_by_month_url }}{% if saved_query %}?saved_query={{ saved_query }}{% endif %}'>
+              {% translate "Days until ticket closed by Month" %}
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  {# Filter report by saved query form #}
+  <div class="card ms-3 mb-3 collapse" id="filterReport">
+    <div class="card-body">
+      {% if user_saved_queries_ %}
+        <p>{% translate "You can run this query on filtered data by using one of your saved queries." %}</p>
+        <div class="row">
+          <div class="col-12 col-lg-4">
+            <form>
+              <label class="form-label" for="saved_query">{% translate "Select Query" %}</label>
+              <div class="input-group mb-3">
+                <select class="form-select" name="saved_query">
+                  <option value="">--------</option>
+                  {% for q in user_saved_queries_ %}
+                    <option value="{{ q.id }}"{% if saved_query == q %} selected{% endif %}>{{ q.title }}</option>
+                  {% endfor %}
+                </select>
+                <button class="btn bg-body-tertiary border" type="submit">{% translate "Run" %}</button>
+              </div>
+            </form>
+
+          </div>
+        </div>
+      {% else %}
+        <p>{% translate "Want to filter this report to just show a subset of data? Go to the Ticket List, filter your query, and save your query." %}</p>
+      {% endif %}
+    </div>
+  </div>
+  {# Chart #}
+  <div class="card ms-3 mb-3">
+    <div class="card-body p-4">
+      <div class="row">
+        <div class="col">
+          <h2 class="fs-5 mb-1">{{ title }}</h2>
+          <p class="small text-body-secondary">{{ desc }}</p>
+        </div>
+        <div class="col-auto">
+          {# Chart settings dropdown #}
+          <div class="dropdown">
+            <button class="btn bg-body-tertiary" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="fa-solid fa-ellipsis-vertical"></i>
+            </button>
+            <ul class="dropdown-menu p-2">
+              <li>
+                <button class="dropdown-item rounded"
+                        id="chartToPng"
+                        type="button">{% translate "Download as PNG" %}</button>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="pb-3 pe-3">
+        <canvas id="myChart" width="400" height="100" aria-label="{{ title }} Chart" role="img"></canvas>
+      </div>
+    </div>
+  </div>
+  {# Tabular data #}
+  <div class="card ms-3 mb-3">
+    <div class="card-body px-0 py-1">
+      <div class="table-responsive">
+        <table class="table">
+          <thead class="text-uppercase small">
+            <tr>
+              {% for h in headings %}
+                <th class="fw-medium">
+                  <span class="text-secondary">{% if forloop.first %}{{ h|title }}{% else %}{{ h }}{% endif %}</span>
+                </th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody class="small">
+            {% for row in data %}
+              <tr>
+                {% for cell in row %}
+                  <td class="text-body-secondary">{{ cell }}</td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+            <tr>
+              {% for cell in total_data %}
+                <td class="text-body-secondary text-uppercase fw-medium">{{ cell }}</td>
+              {% endfor %}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock helpdesk_body %}
+
+
+{% block helpdesk_js %}
+  {{ chart_data|json_script:"chartData" }}
+  {% if helpdesk_settings.HELPDESK_USE_CDN %}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  {% else %}
+    <script src="{% static 'helpdesk/vendor/chart.js/chart.umd.min.js' %}"></script>
+  {% endif %}
+  <script src="{% static 'helpdesk/js/report_output.js' %}"></script>
+{% endblock helpdesk_js %}
