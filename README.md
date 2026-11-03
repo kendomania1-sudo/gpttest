@@ -9,7 +9,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-브라우저에서 http://localhost:8501 이 열립니다.
+브라우저에서 http://localhost:8501 이 열립니다. 상단 검색창에 회사명을 입력하고 **검색**을 누르세요.
+`?q=회사명` 을 주소 뒤에 붙이면 해당 회사로 바로 열립니다 (예: `...streamlit.app/?q=Tesla`).
 
 ## 기능
 - 회사명 검색: 한글 주요 기업명(삼성전자, 네이버, 현대차 …)은 내장 매핑, 그 외는 Yahoo Finance 검색 (영문명/티커 권장)

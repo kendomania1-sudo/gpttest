@@ -185,20 +185,29 @@ def fmt_table(df: pd.DataFrame, quarterly: bool, div: float) -> pd.DataFrame:
 st.set_page_config(page_title="기업 3년 분석", page_icon="📈", layout="wide")
 st.title("📈 기업 3년 주가 · 실적 · 현금흐름")
 
-with st.sidebar:
-    query = st.text_input("회사 이름 또는 티커", "삼성전자",
-                          help="예: 삼성전자, 네이버, Apple, Tesla, 005930.KS, MSFT")
-    quarterly = st.toggle("분기 실적 보기", value=False,
-                          help="Yahoo는 분기 데이터를 최근 4~5개 분기만 제공합니다.")
-    st.caption("데이터 출처: Yahoo Finance · 연간 재무제표는 보통 최근 4개 회계연도까지 제공됩니다.")
+# 검색창은 모바일에서도 보이도록 본문 상단에 둡니다. (?q=회사명 으로 바로 열기 가능)
+if "query" not in st.session_state:
+    st.session_state.query = st.query_params.get("q", "삼성전자")
+    st.session_state.typed = st.session_state.query
 
-if not query.strip():
-    st.stop()
+with st.form("search", border=False):
+    col_in, col_btn = st.columns([4, 1], vertical_alignment="bottom")
+    typed = col_in.text_input("회사 이름 또는 티커", key="typed",
+                              placeholder="예: 삼성전자, 네이버, Apple, Tesla, 005930.KS")
+    if col_btn.form_submit_button("🔍 검색", width="stretch") and typed.strip():
+        st.session_state.query = typed.strip()
+        st.query_params["q"] = st.session_state.query
 
+quarterly = st.toggle("분기 실적 보기", value=False,
+                      help="Yahoo는 분기 데이터를 최근 4~5개 분기만 제공합니다.")
+st.caption("데이터 출처: Yahoo Finance · 연간 재무제표는 보통 최근 4개 회계연도까지 제공됩니다.")
+
+query = st.session_state.query
 candidates = resolve_ticker(query)
 labels = [f"{c['name']} ({c['symbol']}{' · ' + c['exchange'] if c['exchange'] else ''})"
           for c in candidates]
-choice = st.selectbox("검색 결과", range(len(candidates)), format_func=lambda i: labels[i])
+choice = st.selectbox("검색 결과", range(len(candidates)), format_func=lambda i: labels[i],
+                      key=f"pick_{query}")
 symbol = candidates[choice]["symbol"]
 
 with st.spinner(f"{symbol} 데이터를 불러오는 중..."):
